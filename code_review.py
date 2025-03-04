@@ -1,18 +1,7 @@
-#!/usr/bin/env python3
-import argparse
-import subprocess
-import requests
+# code_review_function.py
 import os
-
-PROMPT_TEMPLATE = """
-Actúa como un ingeniero de software senior. Realiza un code review del siguiente cambio.
-Analiza posibles errores, violaciones de principios SOLID, problemas de rendimiento,
-inconsistencias de estilo y posibles mejoras. Organiza tu respuesta en secciones claras.
-Responde en español.
-
-Código diff:
-{diff}
-"""
+import ollama as Ollama
+import subprocess
 
 def get_git_output(command):
     try:
@@ -21,69 +10,45 @@ def get_git_output(command):
         print(f"Error de Git: {e.output}")
         exit(1)
 
-def main():
-    parser = argparse.ArgumentParser(description='Code Review Automático usando Ollama')
-    parser.add_argument('--model', default='codellama:7b', help='Modelo de Ollama a usar (default: codellama:7b)')
-    parser.add_argument('--dev-branch', default='development', help='Rama base para comparación (default: development)')
-    args = parser.parse_args()
+def codellama_review(file_path, prompt_file, model='codellama:7b'):
+    # Read the prompt file content
+    with open(prompt_file, 'r') as f:
+        prompt_template = f.read()
 
-    print(f"🔄 Obteniendo rama actual...")
-    current_branch = get_git_output(['git', 'branch', '--show-current']).strip()
+    print(file_path)
+    # Get the file changes compared to dev branch
+    result = get_git_output(['git', 'diff', 'development', '--', file_path])
+
+    if not result.strip():
+        print("No hay cambios en el archivo")
+        return
+
+    file_changes = result
+
+    # Read the file content
+    with open(file_path, 'r') as f:
+        file_content = f.read()
     
-    if current_branch == args.dev_branch:
-        print(f"⚠️  Ya estás en la rama {args.dev_branch}")
-        exit(1)
+    # print(file_changes)
 
-    print(f"🔍 Comparando con rama '{args.dev_branch}'...")
-    changed_files = get_git_output(['git', 'diff', '--name-only', args.dev_branch]).splitlines()
-    
-    if not changed_files:
-        print("✅ No hay cambios detectados")
-        exit(0)
+    # Replace placeholders in prompt with actual content
+    prompt = prompt_template.replace('{{changes}}', file_changes)
+        # .replace('{{content}}', file_content)
+    # print(prompt)
 
-    print(f"📁 Archivos modificados ({len(changed_files)}):")
-    for file in changed_files:
-        print(f" - {file}")
+    # Run code review using Ollama API
+    client = Ollama.Client(
+        host='http://192.168.0.111:11434',
+        headers={'x-some-header': 'some-value'}
+    )
+    response = client.chat(
+        model=model,
+        messages=[{
+            "role": "user",
+            "content": prompt
+        }],
+        stream=False
+    )
+    print(response.message)
 
-    print("\n" + "="*50 + "\n")
-
-    for file in changed_files:
-        print(f"🔎 Analizando: {file}")
-        diff = get_git_output(['git', 'diff', args.dev_branch, '--', file])
-        
-        if not diff.strip():
-            print("⚡ Sin cambios relevantes, saltando...")
-            continue
-
-        try:
-            response = requests.post(
-                'http://localhost:11434/api/generate',
-                json={
-                    'model': args.model,
-                    'prompt': PROMPT_TEMPLATE.format(diff=diff),
-                    'stream': False,
-                    'options': {
-                        'temperature': 0.2,
-                        'num_predict': 1000
-                    }
-                }
-            )
-            
-            if response.status_code != 200:
-                print(f"❌ Error API: {response.text}")
-                continue
-
-            review = response.json()['response']
-            print(f"\n📝 Review para {file}:\n")
-            print(review)
-            print("\n" + "-"*50 + "\n")
-
-        except requests.exceptions.ConnectionError:
-            print("❌ No se pudo conectar a Ollama. ¿Está ejecutándose?")
-            exit(1)
-        except Exception as e:
-            print(f"❌ Error inesperado: {str(e)}")
-            continue
-
-if __name__ == "__main__":
-    main()
+    return response.message.content
